@@ -8,25 +8,44 @@ from huggingface_hub import hf_hub_download
 
 class FootballPredictor:
     def __init__(self):
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.feature_names = self.load_model("feature_names.joblib")
+        self.load_models()
+        self.load_dataset()
         
+    def load_models(self):
         # Load the saved models and transformers from Hugging Face
-        self.model_winner = self.load_model("random_forest_model_winner.joblib")
-        self.model_home_score = self.load_model("random_forest_model_home_score.joblib")
-        self.model_away_score = self.load_model("random_forest_model_away_score.joblib")
-        self.imputer = self.load_model("imputer.joblib")
-        self.scaler = self.load_model("feature_scaler.joblib")
+        self.model_winner = self.load_model("football_prediction_ensemble.joblib")
+        self.model_home_score = self.load_model("home_goals_model.joblib")
+        self.model_away_score = self.load_model("away_goals_model.joblib")
+        self.imputer = self.load_model("imputer_GradientBoosting.joblib")
+        self.scaler = self.load_model("scaler_GradientBoosting.joblib")
         self.le = self.load_model("label_encoder.joblib")
         
+        # Additional models
+        self.gradient_boosting_model = self.load_model("GradientBoosting_model.joblib")
+        self.logistic_regression_model = self.load_model("LogisticRegression_model.joblib")
+        self.random_forest_model = self.load_model("RandomForest_model.joblib")
+        self.xgboost_model = self.load_model("XGBoost_model.joblib")
+        self.feature_names = self.load_model("feature_names.joblib")
+        
+        # Additional imputers and scalers
+        self.imputer_logistic_regression = self.load_model("imputer_LogisticRegression.joblib")
+        self.imputer_random_forest = self.load_model("imputer_RandomForest.joblib")
+        self.imputer_xgboost = self.load_model("imputer_XGBoost.joblib")
+        self.scaler_logistic_regression = self.load_model("scaler_LogisticRegression.joblib")
+        self.scaler_xgboost = self.load_model("scaler_XGBoost.joblib")
+        self.scaler_random_forest = self.load_model("scaler_RandomForest.joblib")
+
+    def load_dataset(self):
         # Load the dataset from Hugging Face
-        csv_path = hf_hub_download(repo_id="tmoklc/base_score_miner", filename="football-features.csv")
+        csv_path = hf_hub_download(repo_id="bogdan198/Footballmodell", filename="ffootball-features.csv")
         self.df = pd.read_csv(csv_path)
         self.df['Date'] = pd.to_datetime(self.df['Date'], utc=True)
         self.df['Season Start'] = pd.to_datetime(self.df['Season Start'], utc=True)
-        self.df['Season End'] = pd.to_datetime(self.df['Season End'], utc=True)       
+        self.df['Season End'] = pd.to_datetime(self.df['Season End'], utc=True)
 
     def load_model(self, filename):
-        repo_id = "tmoklc/base_score_miner"
+        repo_id = "bogdan198/Footballmodell"
         model_path = hf_hub_download(repo_id=repo_id, filename=filename)
         return load(model_path)
 
@@ -72,7 +91,8 @@ class FootballPredictor:
             ((team_matches['Away Team'] == team) & (team_matches['Winner'] == 'AWAY_TEAM'))
         )
         
-        h2h_matches = self.df[((self.df['Home Team'] == team) & (self.df['Away Team'] == team)) | ((self.df['Away Team'] == team) & (self.df['Home Team'] == team))]
+        h2h_matches = self.df[((self.df['Home Team'] == team) & (self.df['Away Team'] == team)) | 
+                              ((self.df['Away Team'] == team) & (self.df['Home Team'] == team))]
         h2h_matches = h2h_matches[h2h_matches['Date'] < date].sort_values('Date', ascending=False).head(5)
         
         h2h_wins = sum(
@@ -88,9 +108,11 @@ class FootballPredictor:
         
         streak = 0
         for _, match in team_matches.iterrows():
-            if (match['Home Team'] == team and match['Winner'] == 'HOME_TEAM') or (match['Away Team'] == team and match['Winner'] == 'AWAY_TEAM'):
+            if ((match['Home Team'] == team and match['Winner'] == 'HOME_TEAM') or 
+                (match['Away Team'] == team and match['Winner'] == 'AWAY_TEAM')):
                 streak += 1
-            elif (match['Home Team'] == team and match['Winner'] == 'AWAY_TEAM') or (match['Away Team'] == team and match['Winner'] == 'HOME_TEAM'):
+            elif ((match['Home Team'] == team and match['Winner'] == 'AWAY_TEAM') or 
+                  (match['Away Team'] == team and match['Winner'] == 'HOME_TEAM')):
                 streak -= 1
             else:
                 break
@@ -106,6 +128,12 @@ class FootballPredictor:
             'streak': streak,
             'performance': performance
         }
+        
+    def get_probabilities(self, features):
+        probabilities = []
+        for pipeline in self.pipelines.values():
+            probabilities.append(pipeline.predict_proba(features)[0])
+        return np.mean(probabilities, axis=0)
 
     def predict_winner(self, home_team, away_team, match_date, competition):
         # Convert match_date to datetime if it's a string
@@ -129,7 +157,8 @@ class FootballPredictor:
         home_stats = self.get_team_stats(home_team, match_date, competition)
         away_stats = self.get_team_stats(away_team, match_date, competition)
         
-        season_info = self.df[(self.df['Competition'] == competition) & (self.df['Date'] <= match_date)].iloc[-1]
+        season_info = self.df[(self.df['Competition'] == competition) & 
+                              (self.df['Date'] <= match_date)].iloc[-1]
         season_start = season_info['Season Start']
         season_end = season_info['Season End']
         
@@ -142,12 +171,11 @@ class FootballPredictor:
         season_progress = days_passed / total_days if total_days > 0 else 0
         
         feature_names = [
-            'Home_Last5_Wins', 'Away_Last5_Wins',
-            'H2H_Home_Win_Ratio', 'H2H_Avg_Goals', 'Home_Days_Since_Last_Match',
-            'Away_Days_Since_Last_Match', 'Home_League_Pos', 'Away_League_Pos', 'League_Pos_Diff',
-            'Home_Form', 'Away_Form',
-            'Home_Team_Home_Performance', 'Away_Team_Away_Performance',
-            'Home_Streak', 'Away_Streak', 'Season_Progress', 'Is_Weekend'
+            'Home_Last5_Wins', 'Away_Last5_Wins', 'H2H_Home_Win_Ratio', 'H2H_Avg_Goals', 
+            'Home_Days_Since_Last_Match', 'Away_Days_Since_Last_Match', 'Home_League_Pos', 
+            'Away_League_Pos', 'League_Pos_Diff', 'Home_Form', 'Away_Form', 
+            'Home_Team_Home_Performance', 'Away_Team_Away_Performance', 'Home_Streak', 
+            'Away_Streak', 'Season_Progress', 'Is_Weekend'
         ]
         
         features = pd.DataFrame([[
@@ -168,13 +196,30 @@ class FootballPredictor:
             away_stats['streak'],
             season_progress,
             1 if match_date.weekday() >= 5 else 0  # Is_Weekend
-        ]], columns=feature_names)
+        ]], columns=self.feature_names)
         
+        # Use the ensemble model for prediction
         features_imputed = self.imputer.transform(features)
         features_scaled = self.scaler.transform(features_imputed)
         
-        # Get probabilities
-        probabilities = self.model_winner.predict_proba(features_scaled)[0]
+        # Get probabilities from all models
+        prob_gb = self.gradient_boosting_model.predict_proba(features_scaled)[0]
+        prob_lr = self.logistic_regression_model.predict_proba(
+            self.scaler_logistic_regression.transform(
+                self.imputer_logistic_regression.transform(features)
+            )
+        )[0]
+        prob_rf = self.random_forest_model.predict_proba(
+            self.imputer_random_forest.transform(features)
+        )[0]
+        prob_xgb = self.xgboost_model.predict_proba(
+            self.scaler_xgboost.transform(
+                self.imputer_xgboost.transform(features)
+            )
+        )[0]
+        
+        # Combine probabilities (simple average)
+        probabilities = (prob_gb + prob_lr + prob_rf + prob_xgb) / 4
         
         # Define a threshold for "marginal" predictions
         threshold = 0.07
@@ -182,7 +227,7 @@ class FootballPredictor:
         # Randomly choose based on probabilities
         result = np.random.choice(self.le.classes_, p=probabilities)
         
-        # Predict scores (but don't return them yet)
+        # Predict scores
         home_score = round(self.model_home_score.predict(features_scaled)[0])
         away_score = round(self.model_away_score.predict(features_scaled)[0])
         
